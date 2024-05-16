@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
 from operator import itemgetter
@@ -14,7 +15,8 @@ from typing import List, Optional, Tuple, Union
 import requests
 from colorama import Fore
 from rapidfuzz import process
-from rapidfuzz.fuzz import token_set_ratio, token_sort_ratio
+from rapidfuzz.distance import OSA
+from rapidfuzz.fuzz import partial_ratio, token_set_ratio, token_sort_ratio
 
 from grayskull.cli.stdout import print_msg
 from grayskull.license.data import get_all_licenses  # noqa
@@ -71,27 +73,64 @@ def match_license(name: str) -> dict:
     if not all_licenses:
         return {}
     name = re.sub(r"\s+license\s*", "", name.strip(), flags=re.IGNORECASE)
+    name = name.strip()
 
-    best_matches = process.extract(name, _get_all_license_choice(all_licenses))
+    best_matches = process.extract(
+        name, _get_all_license_choice(all_licenses), scorer=partial_ratio
+    )
+    best_matches = process.extract(name, [lc for lc, *_ in best_matches])
     spdx_license = best_matches[0]
-    if spdx_license[1] != 100:
-        best_matches = [lic[0] for lic in best_matches if not lic[0].endswith("-only")]
+
+    if spdx_license[1] < 100:
+        # Prefer "-or-later" licenses over the "-only"
+        later_licenses = {
+            lic[0].replace("-or-later", "")
+            for lic in best_matches
+            if lic[0].endswith("-or-later")
+        }
+        best_matches = [
+            lic[0]
+            for lic in best_matches
+            if not (
+                lic[0].endswith("-only")
+                and lic[0].replace("-only", "") in later_licenses
+            )
+        ]
 
         if best_matches:
-            best_matches = process.extract(name, best_matches, scorer=token_set_ratio)
+            best_matches = process.extract(
+                name, best_matches, scorer=OSA.normalized_similarity
+            )
+            original_matches = deepcopy(best_matches)
+
+            if name.startswith("GPL"):
+                original_matches = [
+                    m for m in original_matches if m[0].startswith("GPL")
+                ]
             spdx_license = best_matches[0]
-            best_matches = [lic[0] for lic in best_matches if lic[1] >= spdx_license[1]]
+            best_matches = [
+                lic[0] for lic in original_matches if lic[1] >= spdx_license[1]
+            ]
             if len(best_matches) > 1:
                 spdx_license = process.extractOne(
                     name, best_matches, scorer=token_sort_ratio
                 )
+            if original_matches and original_matches[0][1] < 0.55:
+                spdx_license = process.extractOne(
+                    name, [m[0] for m in original_matches], scorer=token_sort_ratio
+                )
+
+    if spdx_license[1] != 100 and spdx_license[0].startswith("MIT"):
+        spdx_license = "MIT"
+    else:
+        spdx_license = spdx_license[0]
 
     log.info(
         f"Best match for license {name} was {spdx_license}.\n"
         f"Best matches: {best_matches}"
     )
 
-    return _get_license(spdx_license[0], all_licenses)
+    return _get_license(spdx_license, all_licenses)
 
 
 def get_short_license_id(name: str) -> str:
@@ -364,7 +403,7 @@ def get_license_type(path_license: str, default: Optional[str] = None) -> Option
     :param default: Default value for the license type
     :return: License type
     """
-    with open(path_license, "r") as license_file:
+    with open(path_license, "r", errors="ignore") as license_file:
         license_content = license_file.read()
     find_apache = re.findall(
         r"apache\.org\/licenses\/LICENSE\-([0-9])\.([0-9])",

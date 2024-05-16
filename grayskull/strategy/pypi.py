@@ -1,7 +1,9 @@
+import itertools
 import json
 import logging
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from tempfile import mkdtemp
 from typing import Dict, Iterable, List, Optional
@@ -59,7 +61,9 @@ class PypiStrategy(AbstractStrategy):
     def fetch_data(recipe, config, sections=None):
         update_recipe(recipe, config, sections or ALL_SECTIONS)
         if not (recipe["build"] and recipe["build"]["script"]):
-            recipe["build"]["script"] = "<{ PYTHON }} -m pip install . -vv"
+            recipe["build"][
+                "script"
+            ] = "<{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation"
 
 
 def merge_pypi_sdist_metadata(
@@ -81,7 +85,6 @@ def merge_pypi_sdist_metadata(
         source_section["url"] = adjust_source_url_to_include_placeholders(
             source_section["url"], get_val("version")
         )
-
     return {
         "author": get_val("author"),
         "name": get_val("name"),
@@ -108,6 +111,7 @@ def merge_pypi_sdist_metadata(
         "requires_dist": requires_dist,
         "sdist_path": get_val("sdist_path"),
         "requirements_run_constrained": get_val("requirements_run_constrained"),
+        "__build_requirements_placeholder": get_val("__build_requirements_placeholder"),
     }
 
 
@@ -478,12 +482,25 @@ def get_metadata(recipe, config) -> dict:
         }
 
 
+def remove_all_inner_nones(metadata: Dict) -> Dict:
+    """Remove all inner None values from a dictionary."""
+    if not isinstance(metadata, Mapping):
+        return metadata
+    for k, v in metadata.items():
+        if not isinstance(v, list):
+            continue
+        metadata[k] = [i for i in v if i is not None]
+    return metadata
+
+
 def update_recipe(recipe: Recipe, config: Configuration, all_sections: List[str]):
     """Update one specific section."""
     from souschef.section import Section
 
     metadata = get_metadata(recipe, config)
+
     for section in all_sections:
+        metadata[section] = remove_all_inner_nones(metadata.get(section, {}))
         if metadata.get(section):
             if section == "package":
                 package_metadata = dict(metadata[section])
@@ -515,12 +532,33 @@ def update_recipe(recipe: Recipe, config: Configuration, all_sections: List[str]
                 output["build"]["noarch"] = "python"
 
 
+def check_noarch_python_for_new_deps(
+    host_req: List, run_req: List, config: Configuration
+):
+    if not config.is_arch:
+        return
+    for dep in itertools.chain(host_req, run_req):
+        dep = dep.strip()
+        only_name = re.split(r"[~^<>=!#\s+]+", dep)[0].strip()
+        if (
+            "# [" in dep
+            or dep.startswith("<{")
+            or only_name in config.pkg_need_c_compiler
+            or only_name in config.pkg_need_cxx_compiler
+        ):
+            config.is_arch = True
+            return
+    config.is_arch = False
+
+
 def extract_requirements(metadata: dict, config, recipe) -> Dict[str, List[str]]:
     """Extract the requirements for `build`, `host` and `run`"""
     name = metadata["name"]
     requires_dist = format_dependencies(metadata.get("requires_dist", []), name)
     setup_requires = metadata.get("setup_requires", [])
     host_req = format_dependencies(setup_requires or [], config.name)
+    build_requires = metadata.get("__build_requirements_placeholder", [])
+    build_req = format_dependencies(build_requires or [], config.name)
     if not requires_dist and not host_req and not metadata.get("requires_python"):
         if config.is_strict_cf:
             py_constrain = (
@@ -536,7 +574,9 @@ def extract_requirements(metadata: dict, config, recipe) -> Dict[str, List[str]]
 
     run_req = get_run_req_from_requires_dist(requires_dist, config)
     host_req = get_run_req_from_requires_dist(host_req, config)
-    build_req = [f"<{{ compiler('{c}') }}}}" for c in metadata.get("compilers", [])]
+    build_req = build_req or [
+        f"<{{ compiler('{c}') }}}}" for c in metadata.get("compilers", [])
+    ]
     if build_req:
         config.is_arch = True
 
@@ -560,6 +600,7 @@ def extract_requirements(metadata: dict, config, recipe) -> Dict[str, List[str]]
     if config.is_strict_cf:
         host_req = remove_selectors_pkgs_if_needed(host_req)
         run_req = remove_selectors_pkgs_if_needed(run_req)
+        check_noarch_python_for_new_deps(host_req, run_req, config)
     result = {}
     if build_req:
         result = {

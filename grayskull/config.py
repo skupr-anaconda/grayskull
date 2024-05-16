@@ -19,20 +19,23 @@ class Configuration:
             PyVer(3, 9),
             PyVer(3, 10),
             PyVer(3, 11),
+            PyVer(3, 12),
         ]
     )
     py_cf_supported: List[PyVer] = field(
         default_factory=lambda: [
-            PyVer(3, 6),
             PyVer(3, 7),
             PyVer(3, 8),
             PyVer(3, 9),
             PyVer(3, 10),
             PyVer(3, 11),
+            PyVer(3, 12),
         ]
     )
     is_strict_cf: bool = False
-    pkg_need_c_compiler: Tuple = field(default_factory=lambda: ("cython",))
+    pkg_need_c_compiler: Tuple = field(
+        default_factory=lambda: ("cython", "cython-blis", "blis")
+    )
     pkg_need_cxx_compiler: Tuple = field(default_factory=lambda: ("pybind11",))
     url_pypi_metadata: str = "https://pypi.org/pypi/{pkg_name}/json"
     download: bool = False

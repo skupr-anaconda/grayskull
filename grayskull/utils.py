@@ -24,6 +24,10 @@ yaml.indent(mapping=2, sequence=4, offset=2)
 yaml.width = 600
 
 
+#  PURL fields               scheme      type           name
+RE_PEP725_PURL = re.compile(r"[a-z]+\:[\.a-z0-9_-]+\/[\.a-z0-9_-]+", re.IGNORECASE)
+
+
 @lru_cache(maxsize=10)
 def get_std_modules() -> List:
     from stdlib_list import stdlib_list
@@ -125,13 +129,20 @@ def rm_duplicated_deps(all_requirements: Union[list, set, None]) -> Optional[lis
     # as it should be added.
     # (This is order-preserving since dicts are ordered by first insertion.)
     new_reqs: dict[str, str] = {}
-    re_split = re.compile(r"\s+|>|=|<|~|!|#")
+    re_split = re.compile(r"\s+(|>|=|<|~|!|#)+")
     for dep in all_requirements:
         if dep.strip().startswith(("{{", "<{")):
             new_reqs[dep] = dep
             continue
-        dep_name = re_split.split(dep.strip())[0].strip()
+        dep_name, *constrains = re_split.split(dep.strip())
+        dep_name = dep_name.strip()
+        constrains = [
+            c.strip()
+            for c in constrains
+            if c.strip() not in {"=*", "==*", "*", "*.*", "*.*.*", ""}
+        ]
         canonicalized = dep_name.replace("_", "-").lower()
+        constrains.insert(0, dep_name)
         if canonicalized in new_reqs:
             # In order to break ties deterministically, we prioritize the requirement
             # which is alphanumerically lowest. This happens to prioritize the "-"
@@ -140,10 +151,10 @@ def rm_duplicated_deps(all_requirements: Union[list, set, None]) -> Optional[lis
             # keep "importlib-metadata" because it is alphabetically lower.
             previous_req = new_reqs[canonicalized]
             if len(dep) > len(previous_req) or "-" in dep_name:
-                new_reqs[canonicalized] = dep
+                new_reqs[canonicalized] = " ".join(constrains)
         else:
-            new_reqs[canonicalized] = dep
-    return list(new_reqs.values())
+            new_reqs[canonicalized] = " ".join(constrains)
+    return [re.sub(r"\s+(#)", "  \\1", v.strip()) for v in new_reqs.values()]
 
 
 def format_dependencies(all_dependencies: List, name: str) -> List:
@@ -160,9 +171,12 @@ def format_dependencies(all_dependencies: List, name: str) -> List:
     re_remove_tags = re.compile(r"\s*(\[.*\])", re.DOTALL)
     re_remove_comments = re.compile(r"\s+#.*", re.DOTALL)
     for req in all_dependencies:
+        if RE_PEP725_PURL.match(req):
+            formatted_dependencies.append(req)
+            continue
         match_req = re_deps.match(req)
         deps_name = req
-        if deps_name.replace("-", "_") == name.replace("-", "_"):
+        if name is not None and deps_name.replace("-", "_") == name.replace("-", "_"):
             continue
         if match_req:
             match_req = match_req.groups()
@@ -211,11 +225,6 @@ def generate_recipe(
         name = file_to_recipe.split(os.path.sep)[-1]
         if os.path.isfile(file_to_recipe):
             copyfile(file_to_recipe, os.path.join(recipe_folder, name))
-
-
-def get_clean_yaml(recipe_yaml: CommentedMap) -> CommentedMap:
-    clean_yaml(recipe_yaml)
-    return add_new_lines_after_section(recipe_yaml)
 
 
 def add_new_lines_after_section(recipe_yaml: CommentedMap) -> CommentedMap:

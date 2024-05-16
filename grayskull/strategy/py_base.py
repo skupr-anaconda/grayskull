@@ -27,6 +27,7 @@ from grayskull.config import Configuration
 from grayskull.license.discovery import ShortLicense, search_license_file
 from grayskull.strategy.py_toml import get_all_toml_info
 from grayskull.utils import (
+    RE_PEP725_PURL,
     PyVer,
     get_vendored_dependencies,
     merge_dict_of_lists_item,
@@ -473,9 +474,9 @@ def get_compilers(
     for pkg in requires_dist:
         pkg = RE_DEPS_NAME.match(pkg).group(0)
         pkg = pkg.lower().strip()
-        if pkg.strip() in config.pkg_need_c_compiler:
+        if pkg.startswith("cython-") or pkg in config.pkg_need_c_compiler:
             compilers.add("c")
-        if pkg.strip() in config.pkg_need_cxx_compiler:
+        if pkg in config.pkg_need_cxx_compiler:
             compilers.add("cxx")
     return list(compilers)
 
@@ -546,10 +547,12 @@ def update_requirements_with_pin(requirements: dict):
         return [p for p in list_pkgs if pkg != p.strip().split(" ", 1)[0]]
 
     for pkg in requirements["host"]:
-        pkg_name = RE_DEPS_NAME.match(pkg).group(0)
-        if pkg_name in PIN_PKG_COMPILER.keys():
-            requirements["run"] = clean_list_pkg(pkg_name, requirements["run"])
-            requirements["run"].append(PIN_PKG_COMPILER[pkg_name])
+        pkg_name_match = RE_DEPS_NAME.match(pkg)
+        if pkg_name_match:
+            pkg_name = pkg_name_match.group(0)
+            if pkg_name in PIN_PKG_COMPILER.keys():
+                requirements["run"] = clean_list_pkg(pkg_name, requirements["run"])
+                requirements["run"].append(PIN_PKG_COMPILER[pkg_name])
 
 
 def discover_license(metadata: dict) -> List[ShortLicense]:
@@ -707,6 +710,7 @@ def merge_setup_toml_metadata(setup_metadata: dict, pyproject_metadata: dict) ->
     setup_metadata = defaultdict(dict, setup_metadata)
     if not pyproject_metadata:
         return setup_metadata
+    setup_metadata["name"] = setup_metadata.get("name") or pyproject_metadata["name"]
     if pyproject_metadata["about"]["license"]:
         setup_metadata["license"] = pyproject_metadata["about"]["license"]
     if pyproject_metadata["about"]["summary"]:
@@ -732,6 +736,14 @@ def merge_setup_toml_metadata(setup_metadata: dict, pyproject_metadata: dict) ->
             setup_metadata.get("install_requires", []),
             pyproject_metadata["requirements"]["run"],
         )
+    # this is not a valid setup_metadata field, but we abuse it to pass it
+    # through to the conda recipe generator downstream. It's because setup.py
+    # does not have a notion of build vs. host requirements. It only has
+    # equivalents to host and run.
+    if pyproject_metadata["requirements"]["build"]:
+        setup_metadata["__build_requirements_placeholder"] = pyproject_metadata[
+            "requirements"
+        ]["build"]
     if pyproject_metadata["requirements"]["run_constrained"]:
         setup_metadata["requirements_run_constrained"] = pyproject_metadata[
             "requirements"
@@ -792,6 +804,7 @@ def get_sdist_metadata(
         dist = UnpackedSDist(path_pkg_info[0].parent)
         for key in ("name", "version", "summary", "author"):
             metadata[key] = getattr(dist, key, None)
+
     return merge_setup_toml_metadata(metadata, pyproject_metadata)
 
 
@@ -799,10 +812,25 @@ def ensure_pep440_in_req_list(list_req: List[str]) -> List[str]:
     return [ensure_pep440(pkg) for pkg in list_req]
 
 
+def split_deps(deps: str) -> List[str]:
+    result = []
+    for d in deps.split(","):
+        constrain = ""
+        for val in re.split(r"([><!=~^]+)", d):
+            if not val:
+                continue
+            if {">", "<", "=", "!", "~", "^"} & set(val):
+                constrain = val.strip()
+            else:
+                result.append(f"{constrain}{val.strip()}")
+    return result
+
+
 def ensure_pep440(pkg: str) -> str:
-    if not pkg:
+    if not pkg or RE_PEP725_PURL.match(pkg):
         return pkg
-    if pkg.strip().startswith("<{") or pkg.strip().startswith("{{"):
+    pkg = pkg.strip()
+    if any([pkg.startswith(pattern) for pattern in ("<{", "{{")]):
         return pkg
     split_pkg = pkg.strip().split(" ")
     if len(split_pkg) <= 1:
@@ -813,7 +841,7 @@ def ensure_pep440(pkg: str) -> str:
         selector = f"  {' '.join(split_pkg[hash_index:])}"
         split_pkg = split_pkg[:hash_index]
     constrain_pkg = "".join(split_pkg[1:])
-    list_constrains = constrain_pkg.split(",")
+    list_constrains = split_deps(constrain_pkg)
     full_constrain = []
     for constrain in list_constrains:
         if "~=" in constrain:

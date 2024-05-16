@@ -42,6 +42,10 @@ bash_completion:
   conda_forge: py-bash-completion
   import_name: bash_completion
 
+build:
+  conda_forge: python-build
+  import_name: build
+
 captest:
   conda_forge: pvcaptest
   import_name: captest
@@ -86,9 +90,17 @@ cufflinks:
   conda_forge: python-cufflinks
   import_name: cufflinks
 
+dashing:
+  conda_forge: python-dashing
+  import_name: dashing
+
 dask:
   conda_forge: dask-core
   import_name: dask
+
+data-morph-ai:
+  conda_forge: data-morph-ai
+  import_name: data_morph
 
 datadotworld:
   conda_forge: datadotworld-py
@@ -110,9 +122,17 @@ docker:
   import_name: docker
   conda_forge: docker-py
 
+duckdb:
+  import_name: duckdb
+  conda_forge: python-duckdb
+
 dye_score:
   conda_forge: dye-score
   import_name: dye_score
+
+eccodes:
+  conda_forge: python-eccodes
+  import_name: eccodes
 
 empyrical_dist:
   conda_forge: empyrical-dist
@@ -173,6 +193,10 @@ graphviz:
 h2o:
   conda_forge: h2o-py
   import_name: h2o
+
+h3:
+  conda_forge: h3-py
+  import_name: h3
 
 hdfs:
   conda_forge: python-hdfs
@@ -279,6 +303,10 @@ nvidia-ml-py3:
   import_name: pynvml
 
 opencv-python:
+  import_name: cv2
+  conda_forge: opencv
+
+opencv-python-headless:
   import_name: cv2
   conda_forge: opencv
 
@@ -488,3 +516,19 @@ importlib_metadata:
 jupyter-client:
   conda_forge: jupyter_client
   import_name: jupyter_client
+
+flit_core:
+  conda_forge: flit-core
+  import_name: flit-core
+
+gssapi:
+  conda_forge: python-gssapi
+  import_name: gssapi
+
+jsii:
+  conda_forge: python-jsii
+  import_name: jsii
+
+blis:
+  conda_forge: cython-blis
+  import_name: blis
